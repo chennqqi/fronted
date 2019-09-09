@@ -4,9 +4,10 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/getlantern/eventual"
 	tls "github.com/refraction-networking/utls"
 )
 
@@ -39,15 +40,19 @@ func CloseCache() {
 }
 
 func NewFrontingContext(name string) *FrontingContext {
-	return &FrontingContext{
-		name:     name,
-		instance: eventual.NewValue(),
+	fc := &FrontingContext{
+		name:  name,
+		ready: make(chan struct{}),
 	}
+	fc._instance.Store(newDirect(nil, 0, "", tls.ClientHelloID{}, fc.signalReady))
+	return fc
 }
 
 type FrontingContext struct {
-	name     string
-	instance eventual.Value
+	name      string
+	_instance atomic.Value
+	ready     chan struct{}
+	readyOnce sync.Once
 }
 
 // Configure sets the masquerades to use, the trusted root CAs, and the
@@ -60,17 +65,10 @@ func (fctx *FrontingContext) Configure(pool *x509.CertPool, providers map[string
 
 func (fctx *FrontingContext) ConfigureWithHello(pool *x509.CertPool, providers map[string]*Provider, defaultProviderID string, cacheFile string, clientHelloID tls.ClientHelloID) error {
 	log.Tracef("Configuring fronted %s context", fctx.name)
-
 	if providers == nil || len(providers) == 0 {
 		return fmt.Errorf("No fronted providers for %s context.", fctx.name)
 	}
-
-	_existing, ok := fctx.instance.Get(0)
-	if ok && _existing != nil {
-		existing := _existing.(*direct)
-		log.Debugf("Closing cache from existing instance for %s context", fctx.name)
-		existing.closeCache()
-	}
+	fctx.CloseCache()
 
 	size := 0
 	for _, p := range providers {
@@ -81,21 +79,7 @@ func (fctx *FrontingContext) ConfigureWithHello(pool *x509.CertPool, providers m
 		return fmt.Errorf("No masquerades for %s context.", fctx.name)
 	}
 
-	d := &direct{
-		certPool:            pool,
-		candidates:          make(chan masquerade, size),
-		masquerades:         make(chan masquerade, size),
-		maxAllowedCachedAge: defaultMaxAllowedCachedAge,
-		maxCacheSize:        defaultMaxCacheSize,
-		cacheSaveInterval:   defaultCacheSaveInterval,
-		toCache:             make(chan masquerade, defaultMaxCacheSize),
-		defaultProviderID:   defaultProviderID,
-		providers:           make(map[string]*Provider),
-		ready:               make(chan struct{}),
-		clientHelloID:       clientHelloID,
-	}
-
-	// copy providers
+	d := newDirect(pool, size, defaultProviderID, clientHelloID, fctx.signalReady)
 	for k, p := range providers {
 		d.providers[k] = NewProvider(p.HostAliases, p.TestURL, p.Masquerades, p.Validator, p.PassthroughPatterns)
 	}
@@ -110,9 +94,9 @@ func (fctx *FrontingContext) ConfigureWithHello(pool *x509.CertPool, providers m
 		d.vet(numberToVet)
 	} else {
 		log.Debugf("Not vetting any masquerades for %s context because we have enough cached ones", fctx.name)
-		d.signalReady()
+		fctx.signalReady()
 	}
-	fctx.instance.Set(d)
+	fctx._instance.Store(d)
 	return nil
 }
 
@@ -120,30 +104,33 @@ func (fctx *FrontingContext) ConfigureWithHello(pool *x509.CertPool, providers m
 // If it can't obtain a working masquerade within the given timeout, it will
 // return nil/false.
 func (fctx *FrontingContext) NewDirect(timeout time.Duration) (http.RoundTripper, bool) {
-	start := time.Now()
-	instance, ok := fctx.instance.Get(timeout)
-	if !ok {
-		log.Errorf("No DirectHttpClient available within %v for context %s", timeout, fctx.name)
-		return nil, false
-	}
-	remaining := timeout - time.Since(start)
-
-	// Wait to be signalled that at least one masquerade has been vetted...
 	select {
-	case <-instance.(*direct).ready:
-		return instance.(http.RoundTripper), true
-	case <-time.After(remaining):
+	case <-fctx.ready:
+		return fctx.instance(), true
+	case <-time.After(timeout):
 		log.Errorf("No DirectHttpClient available within %v", timeout)
 		return nil, false
 	}
 }
 
+// Ready returns a channel which always signal as long as there's at least one
+// masquerade available.
+func (fctx *FrontingContext) Ready() <-chan struct{} {
+	return fctx.ready
+}
+
 // CloseCache closes any existing cache file in the default contexxt.
 func (fctx *FrontingContext) CloseCache() {
-	_existing, ok := fctx.instance.Get(0)
-	if ok && _existing != nil {
-		existing := _existing.(*direct)
-		log.Debugf("Closing cache from existing instance in %s context", fctx.name)
-		existing.closeCache()
-	}
+	log.Debugf("Closing cache from existing instance in %s context", fctx.name)
+	fctx.instance().closeCache()
+}
+
+func (fctx *FrontingContext) signalReady() {
+	fctx.readyOnce.Do(func() {
+		close(fctx.ready)
+	})
+}
+
+func (fctx *FrontingContext) instance() *direct {
+	return fctx._instance.Load().(*direct)
 }

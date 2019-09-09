@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/getlantern/golog"
@@ -45,9 +44,24 @@ type direct struct {
 	toCache             chan masquerade
 	defaultProviderID   string
 	providers           map[string]*Provider
-	ready               chan struct{}
-	readyOnce           sync.Once
 	clientHelloID       tls.ClientHelloID
+	masqueradeReady     func()
+}
+
+func newDirect(pool *x509.CertPool, size int, defaultProviderID string, clientHelloID tls.ClientHelloID, masqueradeReady func()) *direct {
+	return &direct{
+		certPool:            pool,
+		candidates:          make(chan masquerade, size),
+		masquerades:         make(chan masquerade, size),
+		maxAllowedCachedAge: defaultMaxAllowedCachedAge,
+		maxCacheSize:        defaultMaxCacheSize,
+		cacheSaveInterval:   defaultCacheSaveInterval,
+		toCache:             make(chan masquerade, defaultMaxCacheSize),
+		defaultProviderID:   defaultProviderID,
+		providers:           make(map[string]*Provider),
+		clientHelloID:       clientHelloID,
+		masqueradeReady:     masqueradeReady,
+	}
 }
 
 func (d *direct) loadCandidates(initial map[string]*Provider) {
@@ -71,12 +85,6 @@ func (d *direct) loadCandidates(initial map[string]*Provider) {
 			d.candidates <- masquerade{Masquerade: *c, ProviderID: key}
 		}
 	}
-}
-
-func (d *direct) signalReady() {
-	d.readyOnce.Do(func() {
-		close(d.ready)
-	})
 }
 
 func (d *direct) providerFor(m *masquerade) *Provider {
@@ -121,6 +129,8 @@ func (d *direct) vetOneUntilGood() {
 	}
 }
 
+// vetOne vets one masquerate and returns true if it is okay to proceed to next
+// one, false otherwise.
 func (d *direct) vetOne() bool {
 	// We're just testing the ability to connect here, destination site doesn't
 	// really matter
@@ -143,9 +153,8 @@ func (d *direct) vetOne() bool {
 	}
 
 	log.Trace("Finished vetting one")
-	// signal that at least one
-	// masquerade has been vetted successfully.
-	d.signalReady()
+	// signal that at least one masquerade has been vetted successfully.
+	d.masqueradeReady()
 	return false
 }
 
