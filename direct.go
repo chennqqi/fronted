@@ -95,25 +95,6 @@ func (d *direct) providerFor(m *masquerade) *Provider {
 	return d.providers[pid]
 }
 
-// Vet vets the specified Masquerade, verifying certificate using the given CertPool
-func Vet(m *Masquerade, pool *x509.CertPool, testURL string) bool {
-	return vet(m, pool, testURL)
-}
-
-func vet(m *Masquerade, pool *x509.CertPool, testURL string) bool {
-	d := &direct{
-		certPool:            pool,
-		maxAllowedCachedAge: defaultMaxAllowedCachedAge,
-		maxCacheSize:        defaultMaxCacheSize,
-	}
-	conn, _, err := d.doDial(m)
-	if err != nil {
-		return false
-	}
-	defer conn.Close()
-	return postCheck(conn, testURL)
-}
-
 func (d *direct) vet(numberToVet int) {
 	log.Tracef("Vetting %d initial candidates in parallel", numberToVet)
 	for i := 0; i < numberToVet; i++ {
@@ -482,4 +463,23 @@ func (ddf *directTransport) RoundTrip(req *http.Request) (resp *http.Response, e
 	*norm.URL = *req.URL
 	norm.URL.Scheme = "http"
 	return ddf.Transport.RoundTrip(norm)
+}
+
+// Vet vets the specified Masquerade, verifying certificate using the given CertPool
+func Vet(m *Masquerade, pool *x509.CertPool, testURL string) bool {
+	return vet(m, pool, testURL)
+}
+
+func vet(m *Masquerade, pool *x509.CertPool, testURL string) bool {
+	d := &direct{
+		certPool:            pool,
+		maxAllowedCachedAge: defaultMaxAllowedCachedAge,
+		maxCacheSize:        defaultMaxCacheSize,
+	}
+	conn, _, err := d.doDial(m)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	return postCheck(conn, testURL)
 }
