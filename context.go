@@ -27,6 +27,12 @@ func Configure(pool *x509.CertPool, providers map[string]*Provider, defaultProvi
 	}
 }
 
+// Ready returns a channel which always signal as long as there's at least one
+// masquerade available for the default fronting context.
+func Ready() <-chan struct{} {
+	return DefaultContext.Ready()
+}
+
 // NewDirect creates a new http.RoundTripper that does direct domain fronting
 // using the default context. If it can't obtain a working masquerade within
 // the given timeout, it will return nil/false.
