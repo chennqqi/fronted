@@ -594,7 +594,7 @@ func TestCustomValidators(t *testing.T) {
 
 		res, err := client.Do(req)
 		if test.expectedError == "" {
-			if !assert.Nil(t, err) {
+			if !assert.NoError(t, err) {
 				continue
 			}
 			assert.Equal(t, test.responseCode, res.StatusCode, "Failed to force response status code")
