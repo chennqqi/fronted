@@ -7,10 +7,11 @@ import (
 	"time"
 )
 
-var (
-	// zero value indicates end of cache filling
-	fillSentinel masquerade
-)
+type cacheOp struct {
+	m      masquerade
+	remove bool
+	close  bool
+}
 
 func (d *direct) initCaching(cacheFile string) int {
 	cache := d.prepopulateMasquerades(cacheFile)
@@ -66,13 +67,26 @@ func (d *direct) fillCache(cache []masquerade, cacheFile string) {
 	cacheChanged := false
 	for {
 		select {
-		case m := <-d.toCache:
-			if m == fillSentinel {
+		case op := <-d.toCache:
+			if op.close {
 				log.Debug("Cache closed, stop filling")
 				return
 			}
-			log.Debugf("Caching vetted masquerade for %v (%v)", m.Domain, m.IpAddress)
-			cache = append(cache, m)
+			m := op.m
+			if op.remove {
+				newCache := make([]masquerade, len(cache))
+				for _, existing := range cache {
+					if existing.Domain == m.Domain && existing.IpAddress == m.IpAddress {
+						log.Debugf("Removing masquerade for %v (%v)", m.Domain, m.IpAddress)
+					} else {
+						newCache = append(newCache, existing)
+					}
+				}
+				cache = newCache
+			} else {
+				log.Debugf("Caching vetted masquerade for %v (%v)", m.Domain, m.IpAddress)
+				cache = append(cache, m)
+			}
 			cacheChanged = true
 		case <-saveTicker.C:
 			if !cacheChanged {
@@ -100,5 +114,5 @@ func (d *direct) fillCache(cache []masquerade, cacheFile string) {
 }
 
 func (d *direct) closeCache() {
-	d.toCache <- fillSentinel
+	d.toCache <- &cacheOp{close: true}
 }

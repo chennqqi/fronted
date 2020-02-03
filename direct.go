@@ -42,7 +42,7 @@ type direct struct {
 	maxAllowedCachedAge time.Duration
 	maxCacheSize        int
 	cacheSaveInterval   time.Duration
-	toCache             chan masquerade
+	toCache             chan *cacheOp
 	defaultProviderID   string
 	providers           map[string]*Provider
 	ready               chan struct{}
@@ -51,11 +51,13 @@ type direct struct {
 }
 
 func (d *direct) loadCandidates(initial map[string]*Provider) {
-	log.Debug("Loading candidates")
+	log.Debugf("Loading candidates for %d providers", len(initial))
+	defer log.Debug("Finished loading candidates")
+
 	for key, p := range initial {
 		arr := p.Masquerades
 		size := len(arr)
-		log.Tracef("Adding %d candidates for %v", size, key)
+		log.Debugf("Adding %d candidates for %v", size, key)
 
 		// make a shuffled copy of arr
 		// ('inside-out' Fisher-Yates)
@@ -114,6 +116,7 @@ func (d *direct) vet(numberToVet int) {
 }
 
 func (d *direct) vetOneUntilGood() {
+	log.Debug("Vetting until we find a good masquerade")
 	for {
 		if !d.vetOne() {
 			return
@@ -186,6 +189,7 @@ func doCheck(client *http.Client, method string, expectedStatus int, u string) b
 // Do continually retries a given request until it succeeds because some
 // fronting providers will return a 403 for some domains.
 func (d *direct) RoundTrip(req *http.Request) (*http.Response, error) {
+	log.Debugf("Round tripping %v: %v", req.Host, req.URL)
 	res, _, err := d.RoundTripHijack(req)
 	return res, err
 }
@@ -318,6 +322,8 @@ func (d *direct) dial() (net.Conn, *masquerade, func(bool) bool, error) {
 func (d *direct) dialWith(in chan masquerade) (net.Conn, *masquerade, func(bool) bool, bool, error) {
 	retryLater := make([]masquerade, 0)
 	defer func() {
+		log.Debugf("%d masquerades to retry", len(retryLater))
+		log.Debugf("capacity %d", len(in))
 		for _, m := range retryLater {
 			// when network just recovered from offline, retryLater has more
 			// elements than the capacity of the channel.
@@ -344,7 +350,7 @@ func (d *direct) dialWith(in chan masquerade) (net.Conn, *masquerade, func(bool)
 			}
 		}
 
-		log.Tracef("Dialing to %v", m)
+		log.Debugf("Dialing to %v", m)
 
 		// We do the full TLS connection here because in practice the domains at a given IP
 		// address can change frequently on CDNs, so the certificate may not match what
@@ -358,14 +364,14 @@ func (d *direct) dialWith(in chan masquerade) (net.Conn, *masquerade, func(bool)
 					// Requeue the working connection to masquerades
 					d.masquerades <- m
 					select {
-					case d.toCache <- m:
+					case d.toCache <- &cacheOp{m: m}:
 						// ok
 					default:
 						// cache writing has fallen behind, drop masquerade
 						log.Debug("Dropping masquerade: cache writing is behind")
 					}
 				} else {
-					go d.vetOneUntilGood()
+					d.toCache <- &cacheOp{m: m, remove: true}
 				}
 
 				return good
@@ -382,7 +388,7 @@ func (d *direct) dialWith(in chan masquerade) (net.Conn, *masquerade, func(bool)
 func (d *direct) doDial(m *Masquerade) (conn net.Conn, retriable bool, err error) {
 	conn, err = d.dialServerWith(m)
 	if err != nil {
-		log.Tracef("Could not dial to %v, %v", m.IpAddress, err)
+		log.Debugf("Could not dial to %v, %v", m.IpAddress, err)
 		// Don't re-add this candidate if it's any certificate error, as that
 		// will just keep failing and will waste connections. We can't access the underlying
 		// error at this point so just look for "certificate" and "handshake".

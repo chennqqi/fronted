@@ -30,9 +30,9 @@ func TestCaching(t *testing.T) {
 			candidates:          make(chan masquerade, 1000),
 			masquerades:         make(chan masquerade, 1000),
 			maxAllowedCachedAge: 250 * time.Millisecond,
-			maxCacheSize:        3,
+			maxCacheSize:        4,
 			cacheSaveInterval:   50 * time.Millisecond,
-			toCache:             make(chan masquerade, 1000),
+			toCache:             make(chan *cacheOp, 1000),
 			providers:           providers,
 			defaultProviderID:   cloudsackID,
 		}
@@ -47,10 +47,11 @@ func TestCaching(t *testing.T) {
 	md := masquerade{Masquerade{Domain: "d", IpAddress: "4"}, now, "sadcloud"} // skipped
 
 	d := makeDirect()
-	d.toCache <- ma
-	d.toCache <- mb
-	d.toCache <- mc
-	d.toCache <- md
+	d.toCache <- &cacheOp{m: ma}
+	d.toCache <- &cacheOp{m: mb}
+	d.toCache <- &cacheOp{m: mc}
+	d.toCache <- &cacheOp{m: md}
+	d.toCache <- &cacheOp{m: ma, remove: true}
 
 	readMasquerades := func() []masquerade {
 		var result []masquerade

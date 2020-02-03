@@ -59,7 +59,7 @@ func (fctx *FrontingContext) Configure(pool *x509.CertPool, providers map[string
 }
 
 func (fctx *FrontingContext) ConfigureWithHello(pool *x509.CertPool, providers map[string]*Provider, defaultProviderID string, cacheFile string, clientHelloID tls.ClientHelloID) error {
-	log.Tracef("Configuring fronted %s context", fctx.name)
+	log.Debugf("Configuring fronted %s context", fctx.name)
 
 	if providers == nil || len(providers) == 0 {
 		return fmt.Errorf("No fronted providers for %s context.", fctx.name)
@@ -88,7 +88,7 @@ func (fctx *FrontingContext) ConfigureWithHello(pool *x509.CertPool, providers m
 		maxAllowedCachedAge: defaultMaxAllowedCachedAge,
 		maxCacheSize:        defaultMaxCacheSize,
 		cacheSaveInterval:   defaultCacheSaveInterval,
-		toCache:             make(chan masquerade, defaultMaxCacheSize),
+		toCache:             make(chan *cacheOp, defaultMaxCacheSize),
 		defaultProviderID:   defaultProviderID,
 		providers:           make(map[string]*Provider),
 		ready:               make(chan struct{}),
